@@ -19,8 +19,8 @@ Most agent runtimes (including vanilla Hermes) treat each turn as a discrete int
 **Active development.** 30-day MVP window started 2026-08-01.
 
 - Goal: ship a usable `nightshift` slash command + transcript viewer + intervention panel
-- See the [wayfinder map](https://github.com/leiyunkang7/hermes-nightshift/issues/1) for weekly milestones
-- See the [project board](https://github.com/leiyunkang7/hermes-nightshift/projects/1) for live progress
+- See the [wayfinder map (issue #1)](https://github.com/leiyunkang7/hermes-nightshift/issues/1) for destination, decisions, and fog-of-war
+- See the [project board](https://github.com/users/leiyunkang7/projects/3) for live ticket status
 
 ## Plugin layout
 
