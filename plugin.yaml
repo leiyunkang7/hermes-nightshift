@@ -1,0 +1,26 @@
+name: nightshift
+version: "0.1.0"
+description: "Long-running, interruptible, transparent agent execution for Hermes Agent"
+author: "leiyunkang7"
+license: "MIT"
+
+# Entry point — Hermes calls register(ctx) on plugin load
+entry: "__init__:register"
+
+# Hooks this plugin registers
+hooks:
+  - subagent_start
+  - subagent_stop
+
+# Slash commands this plugin adds
+commands:
+  - name: nightshift
+    description: "Run a long-running, interruptible task"
+  - name: nightshift-status
+    description: "Show status of running nightshift tasks"
+  - name: nightshift-pause
+    description: "Pause a running nightshift task"
+  - name: nightshift-resume
+    description: "Resume a paused nightshift task"
+  - name: nightshift-inject
+    description: "Inject new instructions into a running task"
