@@ -68,23 +68,25 @@ inject, but it does not lose context — the transcript mirror, the
 state file, and the staged injection file all stay on disk and are
 visible to a human operator throughout.
 
-## What Week 3 will likely do
+## What Week 3 did
 
-Three options, in order of preference:
+Three options were ranked in this document; route (3) was selected in
+[issue #7](https://github.com/leiyunkang7/hermes-nightshift/issues/7) and
+shipped in [issue #8](https://github.com/leiyunkang7/hermes-nightshift/issues/8):
 
-1. **Propose a `pre_subagent_iteration` hook upstream.** Hermes already
-   has `pre_llm_call` and `pre_tool_call`; a parallel
-   `pre_subagent_iteration(subagent_id, current_messages, parent_agent)`
-   would let the plugin prepend/append to the child's next turn.
-2. **Use the existing `AIAgent._active_children` + the
-   `_subagent_message_post_processor` extension (if exposed by then).**
-3. **If neither lands in time, ship a "rerun with prior transcript as
-   context" mode** that re-dispatches with the old run's transcript
-   attached as `context=` — semantically weaker but mechanically
-   straightforward.
+> **Ship a "rerun with prior transcript as context" mode that
+> re-dispatches with the old run's transcript attached as `context=` —
+> semantically weaker but mechanically straightforward.**
 
-The current Week 2 implementation is designed to make the transition
-to option (1) or (2) a localized change: only
-`nightshift_state.write_injection` would gain a new
-`push_to_subagent(...)` branch; the slash command and the staging
-format stay the same.
+`/nightshift-resume <task_id>` now mints a new task_id under the
+generation-counter rule, copies the parent's `transcript.md` into the
+new run dir as `prior_transcript.md`, re-dispatches via `delegate_task`
+with `context=prior_transcript_body`, and links the new run back to
+the parent via `resumed_from`. See the README §Known limitations for
+the user-facing description.
+
+Routes (1) and (2) remain future uplifts: if Hermes exposes a
+`pre_subagent_iteration` hook (route 1) or a writable post-processor on
+`_active_children` (route 2), the staging layer in
+`nightshift_state.write_injection` grows a new branch and the redirect
+becomes true mid-run inject rather than pause-and-rerun.

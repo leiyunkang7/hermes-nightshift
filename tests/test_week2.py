@@ -477,12 +477,20 @@ def test_resume_only_for_paused_runs(tmp_path):
         # Resuming a running run should be rejected
         out = ctx.commands["nightshift-resume"]["handler"](tid)
         assert "for paused/interrupted runs only" in out
-        # Mark as pausing, then resume works
+        # Mark as pausing, then resume dispatches a new run under <tid>-1.
+        # Week 3 contract (issue #8): resume does NOT mutate the parent
+        # status — it dispatches a fresh child and links via `resumed_from`.
         save_state = sys.modules[_PKG + ".nightshift_state"].save_state
         save_state(tid, {"status": "pausing"})
         out = ctx.commands["nightshift-resume"]["handler"](tid)
-        assert "marked resumable" in out
-        assert load_state(tid)["status"] == "resumable"
+        assert f"{tid}-1" in out
+        assert "resumed" in out
+        # Parent state.json is preserved (audit trail)
+        parent_rec = load_state(tid)
+        assert parent_rec["status"] == "pausing"
+        # Child state.json carries the link
+        child_rec = load_state(f"{tid}-1")
+        assert child_rec["resumed_from"] == tid
 
 
 def test_inject_stages_text_and_marks_transcript(tmp_path):

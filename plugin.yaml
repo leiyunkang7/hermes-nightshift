@@ -1,6 +1,6 @@
 name: nightshift
-version: "0.2.0"
-description: "Async, persistent, interruptible delegated tasks with visible transcripts."
+version: "0.3.0"
+description: "Async, persistent, interruptible delegated tasks with visible transcripts and resumption."
 author: "leiyunkang7"
 license: "MIT"
 
@@ -18,6 +18,6 @@ commands:
   - name: nightshift-pause
     description: "Request a single subagent to stop at its next iteration boundary."
   - name: nightshift-resume
-    description: "Mark a paused run reschedulable (Week 2: does not auto-rerun)."
+    description: "Re-dispatch a paused run with its prior transcript packed into context= (Week 3)."
   - name: nightshift-inject
     description: "Stage new instructions for a live subagent (Week 2: disk-staged)."

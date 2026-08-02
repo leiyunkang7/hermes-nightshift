@@ -131,11 +131,13 @@ _nightshift_state = _import_sibling("nightshift_state")
 # Re-export the state functions under their old `nightshift_state.X`
 # names so the rest of the file can use them unchanged.
 append_transcript_line = _nightshift_state.append_transcript_line
+copy_prior_transcript = _nightshift_state.copy_prior_transcript
 injections_dir = _nightshift_state.injections_dir
 last_transcript_lines = _nightshift_state.last_transcript_lines
 list_runs = _nightshift_state.list_runs
 load_state = _nightshift_state.load_state
 new_task_id = _nightshift_state.new_task_id
+next_child_task_id = _nightshift_state.next_child_task_id
 prune_stale_runs = _nightshift_state.prune_stale_runs
 run_dir = _nightshift_state.run_dir
 save_state = _nightshift_state.save_state
@@ -181,12 +183,16 @@ def _error(message: str) -> str:
     return f"nightshift: {message}"
 
 
-def _delegate_dispatch(goal: str, *, background: bool, parent_ctx: Any) -> str:
+def _delegate_dispatch(goal: str, *, background: bool, parent_ctx: Any, context: Optional[str] = None) -> str:
     """Call `delegate_task` via the live plugin context.
 
     The framework auto-injects the parent agent when it sees the
     dispatch, so the handler does not need to thread it through.
     Returns the raw JSON string the tool produced.
+
+    `context` is passed straight through as the core's `context=`
+    argument. Week 3 uses it for `/nightshift-resume` (prior transcript);
+    Week 1 / 2 leave it None.
     """
     if parent_ctx is None:
         return json.dumps({"error": "plugin context not bound (run inside hermes)"})
@@ -199,9 +205,12 @@ def _delegate_dispatch(goal: str, *, background: bool, parent_ctx: Any) -> str:
         from tools import delegate_tool as _delegate_module  # noqa: F401
     except Exception:
         pass
+    args: Dict[str, Any] = {"goal": goal, "role": "leaf", "background": background}
+    if context is not None:
+        args["context"] = context
     return parent_ctx.dispatch_tool(
         "delegate_task",
-        {"goal": goal, "role": "leaf", "background": background},
+        args,
     )
 
 
@@ -427,32 +436,143 @@ def handle_nightshift_pause(raw_args: str) -> str:
 # ---------------------------------------------------------------------------
 
 def handle_nightshift_resume(raw_args: str) -> str:
-    """Week 2 resume: clear the pause flag and mark the run as rerunnable.
+    """Week 3 resume: re-dispatch the run with the prior transcript as `context=`.
 
-    Week 3 will grow this into `dispatch_async_delegation_batch(rerun=...)`
-    or a similar core-level continuation. The Week 2 contract is: we
-    never *restart* the subagent from inside the plugin; the user issues
-    a fresh `/nightshift` if they want a rerun. Resume here means
-    "allow future dispatches to proceed (clear `pause_requested`) and
-    mark this run as reschedulable."
+    Behavior (locked in issue #8):
+
+    1. The run's status must be one of `pausing`, `pause_requested`,
+       `interrupted`. Anything else rejects with the Week 2 message.
+    2. Read the parent's `goal` and `transcript.md` from disk.
+    3. Mint a new task_id per the generation-counter rule (see
+       `next_child_task_id` in nightshift_state).
+    4. Create a new run dir; copy the parent's transcript.md into it
+       as `prior_transcript.md` (a copy, not a symlink, so the new
+       run survives `prune_stale_runs` later deleting the parent).
+    5. Re-dispatch via `_delegate_dispatch(goal, background=True, ...)`
+       with `context=prior_transcript_body`.
+    6. Append a `resume: dispatched <new_id>` marker to the parent's
+       transcript mirror. The parent's state.json is NOT mutated --
+       the audit trail stays pristine; the chain lives in the new
+       run's `resumed_from` field.
+
+    Returns the same user-facing shape `handle_nightshift` returns
+    (new task_id, delegation_id, tail/pause/inject reminders) so the
+    downstream UX stays consistent.
     """
     parts = (raw_args or "").strip().split()
     if not parts or parts[0] in {"-h", "--help", "help"}:
         return _error(_command_help("nightshift-resume"))
-    task_id = parts[0]
-    rec = load_state(task_id)
-    if rec is None:
-        return _error(f"no such run: {task_id}")
-    if rec.get("status") not in {"pausing", "pause_requested", "interrupted"}:
+    parent_task_id = parts[0]
+    parent_rec = load_state(parent_task_id)
+    if parent_rec is None:
+        return _error(f"no such run: {parent_task_id}")
+    if parent_rec.get("status") not in {"pausing", "pause_requested", "interrupted"}:
         return _error(
-            f"run {task_id} is {rec.get('status')!r}; resume is for paused/interrupted runs only"
+            f"run {parent_task_id} is {parent_rec.get('status')!r}; resume is for paused/interrupted runs only"
         )
-    save_state(task_id, {"status": "resumable", "resumed_at": _now_iso()})
-    append_transcript_line(task_id, f"[{_hh_mm_ss()}] user  | resume: run is reschedulable; issue a fresh `/nightshift` to rerun the goal")
+
+    prior_goal = (parent_rec.get("goal") or "").strip()
+    if not prior_goal:
+        return _error(f"run {parent_task_id} has no goal recorded; cannot resume")
+
+    # Read parent's transcript; fall back to a one-line marker if missing.
+    parent_transcript_path = transcript_path(parent_task_id)
+    if parent_transcript_path.exists() and parent_transcript_path.stat().st_size > 0:
+        prior_transcript_body = parent_transcript_path.read_text(encoding="utf-8")
+    else:
+        prior_transcript_body = (
+            f"# prior transcript unavailable\n"
+            f"# (parent run {parent_task_id} had no transcript.md on disk)\n"
+        )
+
+    # Mint the new task_id per the generation-counter rule.
+    new_id = next_child_task_id(parent_task_id)
+
+    # Persist the new run's state.json up front (status: dispatching) so
+    # /nightshift-status can see it immediately.
+    save_state(new_id, {
+        "status": "dispatching",
+        "goal": prior_goal[:500],
+        "started_at": _now_iso(),
+        "role": "leaf",
+        "background": True,
+        "resumed_from": parent_task_id,
+    })
+    write_transcript_header(new_id, prior_goal, source_log=None)
+
+    # Copy the parent's transcript into the new run dir as a static file.
+    # Using copy_prior_transcript handles both the success and fallback cases.
+    copy_prior_transcript(parent_task_id, new_id)
+
+    # Append a marker to the PARENT's transcript so an operator tailing
+    # either side sees the link. Parent state.json is intentionally not
+    # mutated (acceptance: byte-identical after resume).
+    append_transcript_line(
+        parent_task_id,
+        f"[{_hh_mm_ss()}] user  | resume: dispatched {new_id} with prior transcript",
+    )
+
+    # Re-dispatch via the same code path /nightshift uses.
+    raw = _delegate_dispatch(prior_goal, background=True, parent_ctx=_ctx(), context=prior_transcript_body)
+    payload = _safe_json(raw)
+
+    if not payload:
+        save_state(new_id, {"status": "dispatch_error", "error": "core returned no JSON"})
+        return _error(f"resume dispatch failed: {raw[:200] if isinstance(raw, str) else raw}")
+
+    if payload.get("error"):
+        save_state(new_id, {"status": "dispatch_error", "error": str(payload["error"])[:500]})
+        return _error(str(payload["error"]))
+
+    delegation_id = payload.get("delegation_id") or ""
+    if payload.get("status") == "dispatched" and delegation_id:
+        live_paths = payload.get("live_transcripts") or []
+        live_path = live_paths[0] if live_paths else None
+        save_state(new_id, {
+            "status": "running",
+            "delegation_id": delegation_id,
+            "core_live_transcript": live_path,
+        })
+        if live_path:
+            write_transcript_header(new_id, prior_goal, source_log=live_path)
+
+        # NOTE: we do NOT call prune_stale_runs() here. The acceptance is
+        # "the old one is preserved under its original id"; even though the
+        # copy under the new run dir means the new run survives a future
+        # prune, this resume path is not the right place to evict old runs.
+        # /nightshift is the canonical retention-triggering call.
+
+        return (
+            f"nightshift: resumed {new_id} (from {parent_task_id})\n"
+            f"  goal: {prior_goal[:160]}\n"
+            f"  delegation_id: {delegation_id}\n"
+            f"  prior transcript: {state_path(new_id).parent / 'prior_transcript.md'}\n"
+            f"  transcript: {transcript_path(new_id)}\n"
+            f"\n"
+            f"  tail with: /nightshift-tail {new_id}\n"
+            f"  pause with: /nightshift-pause {new_id}\n"
+            f"  inject with: /nightshift-inject {new_id} \"new instructions\"\n"
+        )
+
+    # Core fell back to inline sync (one-shot runtimes).
+    results = payload.get("results") or []
+    summary = ""
+    status = "completed"
+    if results:
+        first = results[0]
+        summary = str(first.get("summary") or "")
+        status = str(first.get("status") or "completed")
+    save_state(new_id, {
+        "status": status,
+        "delegation_id": delegation_id or None,
+        "summary": summary[:2000],
+        "inline": True,
+    })
+    if summary:
+        append_transcript_line(new_id, f"[{_hh_mm_ss()}] final | {summary[:400]}")
     return (
-        f"nightshift: {task_id} marked resumable\n"
-        f"  Week 2: a *new* `/nightshift \"<goal>\"` will pick up the original goal; the\n"
-        f"  past transcript and state stay on disk under the original task_id."
+        f"nightshift: resumed-and-completed {new_id} (from {parent_task_id}, status: {status})\n"
+        f"  summary: {summary or '(none)'}"
     )
 
 

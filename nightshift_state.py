@@ -192,6 +192,94 @@ def prune_stale_runs(max_keep: int = MAX_RUNS_RETAINED) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Resume chain — generation counter
+# ---------------------------------------------------------------------------
+
+def _direct_child_suffixes(parent_task_id: str) -> List[int]:
+    """Return the integer suffixes of all direct children of `parent_task_id`.
+
+    A "direct child" is any run whose task_id starts with `<parent>-` and
+    whose suffix begins with a single integer (e.g. `ns_root-1`, `ns_root-2`,
+    but NOT `ns_root-1-1` — that is a grandchild of `ns_root`). The chain
+    rule: a parent owns integer counter space `1, 2, 3, …`; a child
+    `ns_root-N` owns its own integer counter space prefixed with `-N-`.
+
+    Pure disk read: scans `~/.hermes/nightshift/runs/` once. No in-memory
+    cache — recovering from disk is the source of truth (the parent run
+    may have been pruned between dispatches).
+    """
+    runs_dir = nightshift_root() / "runs"
+    if not runs_dir.is_dir():
+        return []
+    out: List[int] = []
+    prefix = f"{parent_task_id}-"
+    for child in runs_dir.iterdir():
+        if not child.is_dir():
+            continue
+        name = child.name
+        if not name.startswith(prefix):
+            continue
+        # Suffix is everything after `parent-`. A direct child has a single
+        # integer segment; chained children have `N-M` and must be ignored
+        # at this level (their `N` is the parent's, not ours to claim).
+        suffix = name[len(prefix):]
+        if "-" in suffix:
+            continue  # grandchild — skip; we only own the first integer segment
+        try:
+            out.append(int(suffix))
+        except ValueError:
+            continue
+    return out
+
+
+def next_child_task_id(parent_task_id: str) -> str:
+    """Return the next free generation-counter child id for `parent_task_id`.
+
+    Counter rule (locked in issue #7):
+
+      root `ns_a1b2`             → children `ns_a1b2-1`, `ns_a1b2-2`, …
+      child `ns_a1b2-1`          → grandchildren `ns_a1b2-1-1`, `ns_a1b2-1-2`, …
+      resume picks the LOWEST free integer (handles gaps from prior prunes)
+
+    Pure function: scans `runs/` once. No side effects, no in-memory state.
+    """
+    taken = set(_direct_child_suffixes(parent_task_id))
+    n = 1
+    while n in taken:
+        n += 1
+    return f"{parent_task_id}-{n}"
+
+
+def copy_prior_transcript(parent_task_id: str, child_task_id: str) -> Optional[str]:
+    """Copy the parent's `transcript.md` into the new run dir as `prior_transcript.md`.
+
+    The copy is intentionally a copy (not a symlink) so the child run stays
+    readable even if `prune_stale_runs` later removes the parent. If the
+    parent's transcript is missing or empty, writes a one-line fallback
+    marker instead — never raises. Returns the absolute path of the file
+    written, or None on a hard failure (permissions, etc.).
+    """
+    try:
+        src = transcript_path(parent_task_id)
+        dst = run_dir(child_task_id) / "prior_transcript.md"
+        if src.exists() and src.stat().st_size > 0:
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            dst.write_text(
+                "# prior transcript unavailable\n"
+                f"# (parent run {parent_task_id} had no transcript.md on disk)\n",
+                encoding="utf-8",
+            )
+        return str(dst)
+    except Exception as exc:
+        logger.debug(
+            "nightshift copy_prior_transcript(%s -> %s) failed: %s",
+            parent_task_id, child_task_id, exc,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Transcript mirror
 # ---------------------------------------------------------------------------
 

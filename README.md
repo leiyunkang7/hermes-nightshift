@@ -54,7 +54,7 @@ and run `/nightshift-pause <task_id>` or
 
 ## Status
 
-**Week 2 of an active development project.**
+**Week 3 of an active development project.**
 
 - Goal: `/nightshift` runs a delegated task end-to-end, persists across the
   CLI turn, and stays inspectable / interruptible while it runs
@@ -92,11 +92,15 @@ channel, and the `subagent_start` / `subagent_stop` lifecycle hooks.
 ├── plugin.yaml            # manifest
 ├── __init__.py            # register() — pre-loads siblings, wires commands
 ├── nightshift_commands.py # command handlers + ctx binding
-├── nightshift_state.py    # run state store + transcript mirror + inject staging
+├── nightshift_state.py    # run state store + transcript mirror + inject staging + resume chain
 ├── docs/
-│   └── inject-limitation.md  # Week 2 inject scope (and Week 3 plan)
+│   ├── inject-limitation.md  # Week 2 inject scope (route 3 implemented Week 3)
+│   └── viewer-survey.md      # transcript-viewer UX survey
 └── tests/
-    └── test_week2.py      # 21 behavior tests
+    ├── test_week2.py         # 21 Week 1/2 behavior tests
+    ├── test_week2_smoke.py   # Week 2 end-to-end smoke (installs plugin, dispatches PONG)
+    ├── test_week3_resume.py  # 23 Week 3 resume behavior tests
+    └── test_week3_smoke.py   # Week 3 end-to-end smoke (pause → resume → status)
 ```
 
 ## State on disk
@@ -152,9 +156,13 @@ at `~/.hermes/nightshift/runs/<task_id>/transcript.md` (the per-run mirror).
 
 - **`/nightshift-inject`** stages the text to disk but does not push it into
   the active child's next turn. See [`docs/inject-limitation.md`](docs/inject-limitation.md)
-  for the Week 3 plan.
-- **`/nightshift-resume`** marks a paused run as reschedulable; it does not
-  auto-rerun. Re-dispatch with `/nightshift` for now.
+  for the upstream-hook plan.
+- **`/nightshift-resume`** (Week 3) re-dispatches the run with the prior
+  transcript packed into `context=`. A new task_id is minted under the
+  generation-counter rule (`ns_<root>-1`, `ns_<root>-2`, …, with
+  grandchildren chained as `ns_<root>-1-1`). The parent's run dir and
+  state.json are preserved; the chain lives in the child's
+  `resumed_from` field.
 - **One process only.** Run state lives on disk so you can introspect past
   runs, but active subagent control (`/nightshift-pause`) only works when
   the subagent is registered with the same hermes process that issued
