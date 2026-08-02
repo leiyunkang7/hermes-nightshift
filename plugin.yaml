@@ -1,6 +1,6 @@
 name: nightshift
-version: "0.1.0"
-description: "Delegate one task and return its summary (Week 1 of hermes-nightshift)."
+version: "0.2.0"
+description: "Async, persistent, interruptible delegated tasks with visible transcripts."
 author: "leiyunkang7"
 license: "MIT"
 
@@ -10,6 +10,14 @@ entry: "__init__:register"
 # Slash commands this plugin adds
 commands:
   - name: nightshift
-    description: "Delegate one task and return its summary."
+    description: "Dispatch a delegated task in the background and return its task_id."
   - name: nightshift-status
-    description: "Show status of running nightshift tasks (Week 2)."
+    description: "List all nightshift runs, or show one run by id."
+  - name: nightshift-tail
+    description: "Show the last N lines of a run transcript (default 40)."
+  - name: nightshift-pause
+    description: "Request a single subagent to stop at its next iteration boundary."
+  - name: nightshift-resume
+    description: "Mark a paused run reschedulable (Week 2: does not auto-rerun)."
+  - name: nightshift-inject
+    description: "Stage new instructions for a live subagent (Week 2: disk-staged)."
