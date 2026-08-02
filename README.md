@@ -25,7 +25,32 @@ by: `/nightshift "do thing"` returns the `task_id`; you watch progress with
 `/nightshift-tail` and stop with `/nightshift-pause`. The full transcript
 streams both to the core's cache (`cache/delegation/live/<id>/task-0.log`)
 and to a per-run mirror under `~/.hermes/nightshift/runs/<task_id>/transcript.md`
-so `tail -f` works from either side.
+— see [Watching a run in real time](#watching-a-run-in-real-time) below.
+
+## Watching a run in real time
+
+The per-run transcript mirror at
+`~/.hermes/nightshift/runs/<task_id>/transcript.md` is plain Markdown that
+grows as the subagent works. To watch it live:
+
+    tail -F ~/.hermes/nightshift/runs/<task_id>/transcript.md
+
+For two concurrent runs, list both files:
+
+    tail -qF ~/.hermes/nightshift/runs/ns_a1b2c3d4/transcript.md \
+              ~/.hermes/nightshift/runs/ns_e5f6g7h8/transcript.md
+
+If you run Hermes in tmux, this is most natural as a split pane:
+
+    tmux split-window -h 'tail -F ~/.hermes/nightshift/runs/<task_id>/transcript.md'
+
+`tail` may print `tail: ...: file truncated` once at run start; this is
+benign — `write_transcript_header` rewrites the file once to splice in
+the source-log annotation, and `tail -F` recovers.
+
+To pause or inject from the viewer, switch focus back to the chat pane
+and run `/nightshift-pause <task_id>` or
+`/nightshift-inject <task_id> "new instructions"`.
 
 ## Status
 
