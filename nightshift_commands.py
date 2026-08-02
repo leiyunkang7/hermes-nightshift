@@ -50,13 +50,83 @@ from typing import Any, Callable, Dict, List, Optional
 # `sys.modules['nightshift_state']` (no prefix), and the FileFinder
 # walks sys.path which doesn't contain the plugin dir.
 #
-# The reliable path: use `importlib.import_module(<fully-qualified
-# name>)` once, cache the module on a local, and read attributes from
-# the local. The fully-qualified lookup walks sys.modules' `parent`
-# prefix and finds the module we pre-registered in __init__.py.
-_nightshift_state = importlib.import_module(
-    "hermes_plugins.nightshift.nightshift_state"
-)
+# Two valid runtime contexts reach this file:
+#
+#   (A) Plugin loader path — __init__.py:_ensure_submodule() has
+#       already pre-registered `hermes_plugins.nightshift.<sibling>`
+#       in sys.modules. The fully-qualified lookup walks sys.modules
+#       and finds it.
+#
+#   (B) Test-suite path — tests/test_week1_command.py loads this file
+#       standalone via spec_from_file_location(name=ROOT/"nightshift_commands.py")
+#       with no parent package on sys.modules. The fully-qualified
+#       lookup then raises ModuleNotFoundError.
+#
+# Fallback chain in `_import_sibling()` covers both:
+#
+#   1. fully-qualified name (covers A and any test that pre-registered
+#      the sibling under the parent package);
+#   2. bare-name lookup of a top-level module named exactly
+#      `<sibling>` (covers tests that pre-registered it flat);
+#   3. last resort: spec_load the sibling file from this module's own
+#      __file__ directory, with no parent package. We do NOT pollute
+#      sys.path with the plugin dir — instead the spec is parent-less
+#      and the resulting module lives at sys.modules[`<sibling>`].
+#      This is safe because the sibling module does not perform
+#      further sibling imports at module scope (verified Week 2).
+def _import_sibling(sibling_name: str):
+    """Resolve a sibling module file regardless of how we were loaded.
+
+    Tries the fully-qualified import first (the production path), then
+    a top-level bare-name lookup (covers tests that pre-registered
+    the sibling flat), then spec-loads the sibling from this module's
+    own directory as a last resort (covers tests that load this file
+    standalone with no parent package on sys.modules).
+    """
+    parent_pkg = __package__ or ""
+    fq_name = f"{parent_pkg}.{sibling_name}" if parent_pkg else ""
+
+    # (1) Fully-qualified — works under both the plugin loader and any
+    #     caller that registered the sibling under the parent package
+    #     before exec'ing this module.
+    if fq_name:
+        try:
+            return importlib.import_module(fq_name)
+        except ModuleNotFoundError:
+            pass
+
+    # (2) Bare-name top-level lookup. If a test (or, in pathological
+    #     cases, a future plugin layout) pre-registered the sibling
+    #     under just `nightshift_state`, we honour that.
+    mod = sys.modules.get(sibling_name)
+    if mod is not None:
+        return mod
+
+    # (3) Last resort: spec-load the sibling file directly, anchored
+    #     to this module's own directory. We do not add the plugin
+    #     directory to sys.path — that would let `import nightshift_*`
+    #     accidentally resolve from anywhere and silently mask a
+    #     misconfigured install. The resulting module lives at the
+    #     sibling's own name in sys.modules; subsequent `import` calls
+    #     for that name re-resolve to the same object.
+    here = Path(__file__).resolve().parent
+    sibling_path = here / f"{sibling_name}.py"
+    if not sibling_path.exists():
+        # Surface the *last* real attempt (the fully-qualified one)
+        # so the caller sees the same error path as before the patch.
+        if fq_name:
+            return importlib.import_module(fq_name)
+        raise ImportError(f"plugin {sibling_name!r} sibling file not found at {sibling_path}")
+    spec = importlib.util.spec_from_file_location(sibling_name, sibling_path)
+    if spec is None or spec.loader is None:  # pragma: no cover — defensive
+        raise ImportError(f"cannot create module spec for {sibling_path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[sibling_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_nightshift_state = _import_sibling("nightshift_state")
 
 # Re-export the state functions under their old `nightshift_state.X`
 # names so the rest of the file can use them unchanged.
